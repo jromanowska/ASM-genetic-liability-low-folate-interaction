@@ -1,0 +1,616 @@
+---
+title: "PRS of low folate concentration and risk of autistic traits"
+author: "Julia Romanowska"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    code_folding: "hide"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(here)
+library(ggplot2)
+library(gt)
+library(flextable)
+library(data.table)
+```
+
+## Data input
+
+```{r read_data, message=FALSE}
+source("00_params.R")
+
+# input_data <- read_delim(
+#   file = here("DATA", "data_ready_analysis_table3.txt"),
+#   delim = "\t"
+#   ) %>%
+#   select(-starts_with("lang_imp")) %>%
+#   select(iid:NOAED_PREG_c, PLURAL, DUPLIKAT, FOL_PRE_or_TRIM1,
+#          FOLAT, s_folat, MTHFR_2strat:autistic_trait) %>%
+#   mutate(
+#     across(
+#       c(minor_al_load, a1, a2, CC, IK_EPI, EPILEPSY2_c, FOL_PRE_or_TRIM1,
+#         autistic_trait, AED_PREG_c, NOAED_PREG_c, CC_STATUS, any_AED, MTHFR_2strat),
+#       ~ factor(.x)
+#     )
+#   )
+# all_ages <- unique(input_data$autist_age)
+all_ages <- c("3yr", "8yr")
+
+# this holds the name of the case-control variable: either CC_STATUS or EPILEPSY2_c
+main_var <- c("CC_STATUS", "CC_STATUS", "any_AED", rep("CC_STATUS", 4))
+names(main_var) <- all_res_types
+
+fitting_results_list <- c(
+  readRDS(
+    here("RESULTS", "analysis_2_fit_adj_model_list.rds")
+  ),
+  list(res_prelim_interact = readRDS(
+    here("RESULTS", "analysis_2_fit_adj_model_interact_list.rds")
+  ))
+)
+
+# since MTHFR-stratification results are organized a bit differently than
+#  the other results, we need the extra depth for genotype-strata;
+#  similarly, the results from stratification by folate suppl. use
+all_mthfr_strata <- names(fitting_results_list$res_prelim_mthfr_aed[[1]])
+all_fol_int_strata <- names(fitting_results_list$res_prelim_fol_int_no_aed$`36mn`)
+
+all_strata <- list(
+  mthfr = all_mthfr_strata,
+  fol_int = all_fol_int_strata
+)
+
+source("03_function_tidy_res.R")
+```
+
+Here is the summary of data that was used in the analysis:
+
+```{r}
+skimr::skim(input_data)
+```
+
+[Descriptive table of the population](RESULTS/Table01_descriptive_stats.html),
+stratified into:
+
+a) women with epilepsy who took AED medication during pregnancy,
+b) women with epilepsy who did not take AED medication during pregnancy, and
+c) women without epilepsy.
+
+The aim of the current analysis was to calculate OR using logistic regression
+for autistic traits at two age categories:
+
+- 3 years (36 months), and
+- 8 years.
+
+## Analyses
+
+I used logistic regression with robust std.errors to include any correlations
+between siblings (based on the same mother ID).
+
+For each age category, we compared either stratum *a* or *b* against *c*.
+
+Moreover, I checked three various PRS (polygenetic risk scores):
+
+- `prs_auto`: automatically calculated PRS (polygenic risk score), using
+{PRSice2} software - including SNPs rs1801133 and rs7545014;
+- `prs_manual`: second-best PRS, calculated by {PRSice2} - including 76 SNPs;
+- `minor_al_load`: checking which allele each individual has at SNP rs1801133 
+in the *MTHFR* gene - only two strata: either no minor allele (i.e., genotype
+`TT`) or 1 or 2 minor alleles (genotypes `CT` or `CC`).
+
+Sensitivity analyses were done by stratifying the data into those who used
+any folate supplementation periconceptionally and those who did not (using the
+`FOL_PRE_or_TRIM1` variable).
+
+Another approach was to look at the entire dataset, comparing only the women
+with epilepsy to the women without epilepsy, taking the use of AED medication
+as a covariate in the model, and checking whether there can be interaction
+between the use of AED and PRS (for each of the genotype variables separately).
+
+Moreover, I also compared the OR for the two strata created by the different
+genotypes at SNP rs1801133 in the *MTHFR* gene, separately for each age
+category.
+
+### Covariates
+
+We chose only three covariates due to few cases and because we want to focus on
+any change in the OR due to including genotype data. Previous analyses by 
+Elisabeth showed that inclusion of any covariates from the MoBa questionnaires
+did not lead to drastic changes in OR for autistic traits.
+
+Covariates chosen:
+
+- `s_folat` - level of intake of folic acid through supplements;
+- `FOLAT` - level of intake of folic acid through diet;
+- `FOL_PRE_or_TRIM1` - any folic acid suppl.periconceptionally
+
+
+## Results - all tables
+
+```{r extract_results}
+all_adj_est <- map(
+  # do this first on the analyses that don't include stratification by folate
+  #   suppl.use or MTHFR-SNP
+  str_subset(all_res_types, "fol_int|mthfr", negate = TRUE),
+  function(cur_res_type){
+    cur_res_list <- fitting_results_list[[cur_res_type]]
+    cur_adj_est <- map(
+      all_ages,
+      function(cur_age){
+        cur_adj_list <- tidy_and_extract(
+          cur_data = cur_res_list[[cur_age]],
+          cur_res_type = cur_res_type,
+          cur_age = cur_age,
+          main_var = main_var[cur_res_type],
+          dept_var = "autistic_trait"
+        )
+        return(cur_adj_list)
+      }
+    ) %>% bind_rows()
+  }
+) %>% bind_rows() %>%
+  select(-term)
+
+# now, for the stratified by folate intake or MTHFR-SNP
+fol_int_strat_adj_est <- map(
+  str_subset(all_res_types, "fol_int|mthfr"),
+  function(cur_res_type){
+    cur_res_list <- fitting_results_list[[cur_res_type]]
+    cur_adj_est <- map(
+      all_ages,
+      function(cur_age){
+        # the results from sensitivity analyses have one more stratum level
+        cur_age_data <- cur_res_list[[cur_age]]
+        cur_adj_list <- map(names(cur_age_data), function(cur_strat){
+          tidy_and_extract(
+            cur_data = cur_age_data[[cur_strat]],
+            cur_res_type = cur_res_type,
+            cur_age = cur_age,
+            main_var = main_var[cur_res_type],
+            dept_var = "autistic_trait"
+          ) %>%
+            tibble::add_column(add_strat = cur_strat)
+          })
+        cur_adj_list <- cur_adj_list %>%
+          bind_rows()
+        return(cur_adj_list)
+      }
+    ) %>% bind_rows()
+  }
+) %>% bind_rows() %>%
+  select(-term)
+
+all_estimates <- bind_rows(
+  fol_int_strat_adj_est,
+  all_adj_est
+)
+
+formula_explain <- all_estimates %>%
+  distinct(adj, formula)
+
+levels_autist <- list(
+  `0`= "no autist.tr.",
+  `1` = "autist.tr."
+)
+title <- "OR of autistic traits"
+```
+
+### Stratified by use of AED
+ 
+```{r show_res_table}
+# show results for women who used AED
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_aed") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who used AED in pregnancy vs mothers w/o epilepsy)"
+)
+
+tab3_aed_users <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_aed_users
+
+# show results for women who did not use AED
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_no_aed") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who did not use AED in pregnancy vs mothers w/o epilepsy)"
+)
+
+tab3_no_aed_users <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_no_aed_users
+```
+
+### Stratified by use of AED and any folate intake
+
+```{r show_res_table_fol_int}
+# show results for women who used AED
+#    and did not use folate supplement
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_fol_int_aed" &
+           add_strat == "0") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who used AED in pregnancy vs mothers w/o epilepsy; all women not taking folate supplement)"
+)
+
+tab3_aed_users_no_fol_int <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_aed_users_no_fol_int
+
+#    and did use folate supplement
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_fol_int_aed" &
+           add_strat == "1") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who used AED in pregnancy vs mothers w/o epilepsy; all women taking folate supplement)"
+)
+
+tab3_aed_users_fol_int <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_aed_users_fol_int
+
+# show results for women who did not use AED
+#    and did not use folate supplement
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_fol_int_no_aed" &
+           add_strat == "0") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who did not use AED in pregnancy vs mothers w/o epilepsy; all women not taking folate supplement)"
+)
+
+tab3_no_aed_users_no_fol_int <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_no_aed_users_no_fol_int
+
+#    and did use folate supplement
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_fol_int_no_aed" &
+           add_strat == "1") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who did not use AED in pregnancy vs mothers w/o epilepsy; all women taking folate supplement)"
+)
+
+tab3_no_aed_users_fol_int <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_no_aed_users_fol_int
+
+```
+
+
+### Not stratified, including interaction
+
+```{r get_all_res_interact}
+cur_res_type <- "res_prelim_interact"
+cur_res_list <- fitting_results_list[[cur_res_type]]
+interaction_all_est <- map(
+  all_ages,
+  function(cur_age){
+    # cat("\n ---- cur_age: ", cur_age, "\n")
+    cur_age_list <- map(
+      names(cur_res_list[[cur_age]]),
+      function(cur_prs){
+        # cat("------- cur_prs: ", cur_prs, "\n\n")
+        cur_model <- cur_res_list[[cur_age]][[cur_prs]]
+        if(cur_prs != "no_prs"){
+          cur_est <- tidy_res_robust(
+            cur_model = cur_model,
+            cluster_var = cur_model$model$m_id,
+            dependent = "autistic_trait",
+            exp = TRUE,
+            interaction = c("any_AED", cur_prs)
+          )
+        } else {
+          cur_est <- tidy_res_robust(
+            cur_model = cur_model,
+            cluster_var = cur_model$model$m_id,
+            dependent = "autistic_trait",
+            exp = TRUE
+          )
+        }
+        cur_est <- cur_est %>%
+          select(-index) %>%
+          rename(aOR = estimate) %>%
+          tibble::add_column(age = cur_age) %>%
+          tibble::add_column(model = cur_prs)
+        return(cur_est)
+      }
+    ) %>% bind_rows()
+    return(cur_age_list)
+  }
+) %>% bind_rows()
+
+```
+
+P-values for the interaction terms within the adjusted models.
+
+```{r manually_extracting_pvalues}
+current_fitted_results <- fitting_results_list$res_prelim_interact
+
+all_pvals_interact_terms <- map(all_ages, function(cur_age){
+  cur_age_list <- current_fitted_results[[cur_age]]
+  cur_out <- map(all_prs_types, function(cur_prs){
+    cur_model <- cur_age_list[[cur_prs]]
+    robust_pval <- lmtest::coeftest( # calculate robust pval
+      cur_model,
+      vcov. = sandwich::vcovCL(cur_model, cluster = cur_model$data$m_id)
+    )
+    robust_pval_tbl <- as_tibble(
+      matrix(robust_pval,
+             nrow = attributes(robust_pval)$dim[1],
+             dimnames = attributes(robust_pval)$dimnames
+             ),
+      rownames = "term"
+      ) %>%
+      mutate(Estimate = exp(Estimate))
+    colnames(robust_pval_tbl) <- c("term", "est", "SE", "z.val", "p.val")
+    return(
+      robust_pval_tbl %>%
+        select(term, est, SE, p.val) %>%
+        tibble::add_column(prs_type = cur_prs)
+    )
+  }) %>%
+    bind_rows() %>%
+    tibble::add_column(age_cat = cur_age)
+  return(cur_out)
+}) %>%
+  bind_rows() %>%
+  filter(term != "(Intercept)")
+
+combined_est_pval_interact <- interaction_all_est %>%
+  left_join(
+    all_pvals_interact_terms %>%
+      select(term, p.val, prs_type, age_cat),
+    by = c("term" = "term", "age" = "age_cat", "model" = "prs_type")
+  ) %>%
+  select(-term)
+
+```
+
+```{r show_all_res_interact}
+tab3_interact <- make_table2_interact(
+  data = combined_est_pval_interact %>%
+    filter(model != "no_prs"),
+  title = "OR of autistic traits; model with interaction between any use of ASM and genotype, defined as either PRS or rs1801133 genotype"
+)
+tab3_interact
+
+# will need to add manually the interaction p-values due to very strange naming:
+all_pvals_interact_terms %>%
+  filter(
+    str_detect(string = term, pattern = fixed(":")) &
+      prs_type == "MTHFR_2strat"
+  )
+```
+
+### Stratified by MTHFR genotype
+
+```{r show_res_table_mthfr}
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_mthfr_aed" &
+           add_strat == "CC") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who used AED in pregnancy vs mothers w/o epilepsy; all women have 'CC' genotype at rs1801133)"
+)
+
+tab3_mthfr_stratCC_aed <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_mthfr_stratCC_aed
+
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_mthfr_no_aed" &
+           add_strat == "CC") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who did not used AED in pregnancy vs mothers w/o epilepsy; all women have 'CC' genotype at rs1801133)"
+)
+
+tab3_mthfr_stratCC_no_aed <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_mthfr_stratCC_no_aed
+
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_mthfr_aed" &
+           add_strat == "CT/TT") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who used AED in pregnancy vs mothers w/o epilepsy; all women have 'CT' or 'TT' genotype at rs1801133)"
+)
+
+tab3_mthfr_stratCT_aed <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_mthfr_stratCT_aed
+
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_mthfr_no_aed" &
+           add_strat == "CT/TT") %>%
+  select(-res_type, -add_strat)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who did not used AED in pregnancy vs mothers w/o epilepsy; all women have 'CT' or 'TT' genotype at rs1801133)"
+)
+
+tab3_mthfr_stratCT_no_aed <- make_table2(cur_data, cur_subtitle, levels = levels_autist)
+tab3_mthfr_stratCT_no_aed
+```
+
+```{r save_doc, include=FALSE}
+save_as_docx(tab3_aed_users,
+           path = here("RESULTS", "table_3_aed_users_final_ORs.docx"))
+
+save_as_docx(tab3_no_aed_users,
+           path = here("RESULTS", "table_3_no_aed_users_final_ORs.docx"))
+
+save_as_docx(tab3_interact,
+           path = here("RESULTS", "table_3_interact_final_ORs.docx"))
+
+save_as_docx(
+  tab3_mthfr_stratCC_aed,
+  path = here("RESULTS", "table_3_mthfr_stratCC_aed_users_final_ORs.docx")
+)
+
+save_as_docx(
+  tab3_mthfr_stratCC_no_aed,
+  path = here("RESULTS", "table_3_mthfr_stratCC_no_aed_users_final_ORs.docx")
+)
+
+save_as_docx(
+  tab3_mthfr_stratCT_aed,
+  path = here("RESULTS", "table_3_mthfr_stratCT_aed_users_final_ORs.docx")
+)
+
+save_as_docx(
+  tab3_mthfr_stratCT_no_aed,
+  path = here("RESULTS", "table_3_mthfr_stratCT_no_aed_users_final_ORs.docx")
+)
+
+save_as_docx(
+  tab3_aed_users_fol_int,
+  path = here("RESULTS", "table_3_fol_int_stratYES_aed_users_final_ORs.docx")
+)
+
+save_as_docx(
+  tab3_no_aed_users_fol_int,
+  path = here("RESULTS", "table_3_fol_int_stratYES_no_aed_users_final_ORs.docx")
+)
+
+save_as_docx(
+  tab3_no_aed_users_no_fol_int,
+  path = here("RESULTS", "table_3_fol_int_stratNO_no_aed_users_final_ORs.docx")
+)
+
+save_as_docx(
+  tab3_aed_users_no_fol_int,
+  path = here("RESULTS", "table_3_fol_int_stratNO_aed_users_final_ORs.docx")
+)
+```
+
+## Results - final presentation
+
+### With and without interaction term
+
+```{r}
+cur_data <- all_estimates %>%
+  filter(res_type == "res_prelim_interact") %>%
+  select(-res_type, -add_strat) %>%
+  mutate(
+    adj = factor(
+          adj,
+          levels = c("no_prs", "MTHFR_2strat", "prs_auto", "prs_manual"),
+          labels = c("no interaction", "interaction with rs1801133", "interaction with PRS (best)", "interaction with PRS (2nd best)")
+        )
+  )
+
+cur_title <- paste0(
+  title, "; (no stratification, comparing impact of interaction terms)"
+  )
+interact_genotype_compact_table <- make_table2_more_compact(
+  data = cur_data,
+  title = cur_title
+)
+interact_genotype_compact_table
+
+save_as_docx(
+  interact_genotype_compact_table,
+  path = here("RESULTS", "table_3_interact_compact.docx")
+)
+```
+
+```{r}
+max_estimate_to_plot <- max(cur_data$estimate, na.rm = TRUE) %>%
+  round()
+cur_data %>%
+  select(estimate:age, adj) %>%
+  distinct() %>%
+  filter(!is.na(estimate) & estimate < (max_estimate_to_plot + 1)) %>%
+ggplot(aes(estimate, adj)) +
+  geom_vline(xintercept = 1, color = "grey80") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(age)) +
+  scale_x_continuous(breaks = c(0, 1, 5, 10, 15, 20)) +
+  coord_cartesian(xlim = c(0, 20)) +
+  labs(
+    title = title,
+    subtitle = "(no stratification, comparing impact of interaction terms)"
+  ) +
+  theme(
+    axis.title.y = element_blank(), plot.title.position = "plot"
+  )
+
+ggsave(filename = here("FIGURES", "autistic_risk_interaction_models.png"))
+```
+
+**Trying forestplot**
+
+```{r}
+# plot nice estimates + CI
+or_plot <- function(cur_data){
+  cur_data %>%
+    select(estimate, conf.high, conf.low) %>%
+    filter(!is.na(estimate)) %>%
+    ggplot(aes(estimate, 1)) +
+    geom_vline(xintercept = 1, color = "grey80") +
+    geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+    scale_x_continuous(breaks = c(0, 1, 5, 10, 15, 20)) +
+    coord_cartesian(expand = FALSE, xlim = c(0, 20)) +
+    theme_minimal() +
+    theme(
+      axis.title = element_blank(),
+      axis.text.y = element_blank()
+    )
+}
+
+interact_genotype_tab_plot <- make_table2_plot_compact(
+  data = cur_data,
+  title = cur_title,
+  levels = levels_autist
+)
+interact_genotype_tab_plot
+
+save_as_docx(
+  interact_genotype_tab_plot,
+  path = here("RESULTS", "table_3_interact_with_plot.docx")
+)
+```
+
+
+### Within each genotype category
+
+```{r}
+cur_data <- all_estimates %>%
+  filter(res_type %in% c("res_prelim_mthfr_aed", "res_prelim_mthfr_no_aed"))
+cur_title <- paste0(
+  title, "; (stratified by genotype at rs1801133)"
+)
+
+cur_data %>%
+  select(estimate, conf.low, conf.high, age, adj, add_strat, res_type) %>%
+  distinct() %>%
+  filter(!is.na(estimate) & adj != "crude") %>%
+  mutate(
+    res_type = factor(
+      res_type,
+      levels = c("res_prelim_mthfr_aed", "res_prelim_mthfr_no_aed"),
+      labels = c("mothers using ASM\n vs. mothers w/o epilepsy",
+                 "mothers not using ASM\n vs. mothers w/o epilepsy")
+      )
+  ) %>%
+  ggplot(aes(estimate, res_type)) +
+  geom_vline(xintercept = 1, color = "grey80") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_grid(rows = vars(age), cols = vars(adj)) +
+  scale_x_continuous(breaks = c(0, 1, 2.5, 5, 7.5, 10)) +
+  coord_cartesian(xlim = c(0, 10)) +
+  labs(title = cur_title) +
+  theme(
+    axis.title.y = element_blank()
+  )
+
+ggsave(filename = here("FIGURES", "autistic_risk_within_MTHFR-SNP_strata.png"))
+```
+

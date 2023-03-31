@@ -1,0 +1,95 @@
+---
+title: "Target Markdown"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+library(targets)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(readr)
+```
+
+# Setup
+
+Remove the `_targets_r` directory previously written by non-interactive runs of the report. Otherwise, the pipeline may contain superfluous targets.
+
+```{r}
+# library(targets)
+# tar_unscript() # deletes the _targets.R
+# tar_destroy("all") # removes parts or all of the objects from _targets/
+```
+
+
+# Targets
+
+Targets are in `_targets.R` file.
+
+Functions `tar_make()`, `tar_validate()`, `tar_manifest()`, `tar_glimpse()`, and `tar_visnetwork()` all need `_targets.R`. `_targets.R` lets these functions invoke the pipeline from a new external R process in order to ensure reproducibility.
+
+```{r}
+tar_validate() # Looks for errors.
+```
+
+```{r}
+tar_manifest(fields = "command") # Data frame of target info.
+```
+
+```{r}
+tar_glimpse() # Interactive dependency graph.
+```
+
+`tar_visnetwork()` also includes functions in the dependency graph, as well as color-coded status information.
+
+```{r}
+tar_visnetwork()
+```
+
+# Pipeline
+
+If you ran all the `{targets}` chunks in non-interactive mode, then your R scripts are set up to run the pipeline.
+
+```{r}
+# tar_invalidate(names = run_plink_manual)
+# tar_invalidate(names = cntrl_ids_folate_cov_file)
+# tar_invalidate(names = starts_with("best_prs"))
+# tar_invalidate(names = c(plink_prs_manual, moba_bim_updated))
+
+tar_make()
+```
+
+# Output
+
+You can retrieve results from the `_targets/` data store using `tar_read()` or `tar_load()`.
+
+```{r, message = FALSE}
+tar_objects()
+tar_load(cntrl_ids_folate_cov)
+cntrl_ids_folate_cov
+```
+
+```{r}
+tar_load(gwas_summ_cleaned)
+gwas_summ_cleaned
+```
+
+Genetic PCA
+
+```{r}
+tar_load(gen_pca)
+gen_pca
+
+gen_pca_eigenval <- read_delim(
+  here("DATA", "cntrl_all_chr_QC_PCA.eigenval"),
+  delim = "\t",
+  col_names = "eigenval"
+) %>%
+  tibble::rowid_to_column("PC_nr")
+gen_pca_eigenval
+
+ggplot(gen_pca_eigenval) +
+  geom_point(aes(as.factor(PC_nr), eigenval))
+```
+

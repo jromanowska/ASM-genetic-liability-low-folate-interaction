@@ -1,0 +1,292 @@
+---
+title: "Risk of language impairment or autistic traits by rs1801133 genotype"
+author: "Julia Romanowska"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    code_folding: "hide"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(here)
+library(ggplot2)
+library(gt)
+library(flextable)
+```
+
+```{r read_data, message=FALSE}
+source("00_params.R")
+
+input_data_lang_imp <- read_delim(
+  here("DATA", "data_ready_analysis_table2.txt"),
+  delim = "\t"
+  ) %>%
+  select(-starts_with("autistic")) %>%
+  mutate(
+    across(
+      c(minor_al_load, a1, a2, CC, IK_EPI, EPILEPSY2_c, FOL_PRE_or_TRIM1,
+        starts_with("lang_imp"), AED_PREG_c, NOAED_PREG_c, CC_STATUS,
+        MTHFR_2strat, any_AED),
+      ~ factor(.x)
+    )
+  )
+
+input_data_autist <- read_delim(
+  file = here("DATA", "data_ready_analysis_table3.txt"),
+  delim = "\t"
+  ) %>%
+  select(iid:NOAED_PREG_c, PLURAL, DUPLIKAT, FOL_PRE_or_TRIM1,
+         FOLAT, s_folat, MTHFR_2strat:autistic_trait) %>%
+  mutate(
+    across(
+      c(minor_al_load, a1, a2, CC, IK_EPI, EPILEPSY2_c, FOL_PRE_or_TRIM1,
+        starts_with("autist"), AED_PREG_c, NOAED_PREG_c, CC_STATUS, any_AED,
+        MTHFR_2strat),
+      ~ factor(.x)
+    )
+  )
+
+source("03_function_tidy_res.R")
+
+```
+
+## Language impairment
+
+```{r}
+cur_data <- input_data_lang_imp
+all_ages <- levels(cur_data$lang_imp_age)
+all_aed_groups <- levels(input_data_autist$CC_STATUS)
+dependent_var <- "lang_imp"
+dept_age_var <- "lang_imp_age"
+title <- "OR of language impairment"
+cur_levels <- list(
+  `0`= "no lang.impair.",
+  `1` = "lang.impair."
+)
+```
+
+```{r run_glm}
+formulas_list <- list(
+  crude = as.formula(
+    paste(dependent_var, "~ MTHFR_2strat")
+  ),
+  adj = as.formula(
+    paste(dependent_var, "~ MTHFR_2strat +",
+          paste(as.character(explanatory_vars), collapse = "+"))
+  )
+)
+
+all_results <- map(all_aed_groups, function(cur_strat){
+  # for each stratum ("epi_AED", "epi_no_AED", "no_epi")
+  # cat("\n -- CURRENT STRATUM: ", cur_strat, "\n")
+  cur_data_strat <- cur_data %>%
+    filter(CC_STATUS == cur_strat)
+  
+  cur_strat_res <- map(all_ages, function(cur_age){
+    # for each age category
+    # cat("\n ---- CURRENT AGE: ", cur_age, "\n")
+    cur_data_age <- cur_data_strat %>%
+      filter(!!sym(dept_age_var) == cur_age)
+    
+    cur_res_list <- map(formulas_list, function(cur_formula){
+      # for each formula
+      cur_fit <- glm(
+        formula = cur_formula,
+        data = cur_data_age,
+        family = "binomial"
+      )
+      cur_fit$call$formula <- cur_formula
+      # print(cur_fit)
+      return(cur_fit)
+    })
+    return(cur_res_list)
+  })
+  names(cur_strat_res) <- all_ages
+  return(cur_strat_res)
+})
+names(all_results) <- all_aed_groups
+```
+
+```{r tidy_res}
+all_tidied_est <- map(all_aed_groups, function(cur_strat){
+        # cat("cur_res: ", cur_strat, "\n")
+    cur_res_list <- all_results[[cur_strat]]
+    cur_adj_est <- map(all_ages, function(cur_age){
+        # cat("\t cur_age: ", cur_age, "\n")
+        cur_adj_list <- tidy_and_extract(
+          cur_data = cur_res_list[[cur_age]],
+          cur_res_type = cur_strat,
+          cur_age = cur_age,
+          main_var = "MTHFR_2strat",
+          dept_var = dependent_var
+        )
+        return(cur_adj_list)
+      }
+    ) %>% bind_rows()
+  }
+) %>% bind_rows() %>%
+  select(-term)
+
+# show results for women who used AED
+cur_data <- all_tidied_est %>%
+  filter(res_type == "epi_AED") %>%
+  select(-res_type)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who used AED in pregnancy)"
+)
+
+tab4_aed_users <- make_table2(cur_data, cur_subtitle, cur_levels)
+tab4_aed_users
+
+# show results for women who did not use AED
+cur_data <- all_tidied_est %>%
+  filter(res_type == "epi_no_AED") %>%
+  select(-res_type)
+cur_subtitle <- paste(
+  title, "; (mothers with epilepsy who did not use AED in pregnancy)"
+)
+tab4_no_aed_users <- make_table2(cur_data, cur_subtitle, cur_levels)
+tab4_no_aed_users
+
+# show results for women who did not use AED
+cur_data <- all_tidied_est %>%
+  filter(res_type == "no_epi") %>%
+  select(-res_type)
+cur_subtitle <- paste(
+  title, "; (mothers without epilepsy)"
+)
+tab4_no_epi <- make_table2(cur_data, cur_subtitle, cur_levels)
+tab4_no_epi
+```
+
+```{r save, include=FALSE}
+save_as_docx(
+  tab4_aed_users,
+  path = here(
+    "RESULTS",
+    paste0("table_4_aed_users_CC-CT-TT_risk_", dependent_var,".docx")
+  )
+)
+
+save_as_docx(
+  tab4_no_aed_users,
+  path = here(
+    "RESULTS",
+    paste0("table_4_no_aed_users_CC-CT-TT_risk_", dependent_var,".docx")
+  )
+)
+
+save_as_docx(
+  tab4_no_epi,
+  path = here(
+    "RESULTS",
+    paste0("table_4_no_epilepsi_CC-CT-TT_risk_", dependent_var,".docx")
+  )
+)
+```
+
+```{r plot}
+all_tidied_est %>%
+  select(estimate:res_type, adj) %>%
+  distinct() %>%
+  filter(!is.na(estimate) & adj != "crude" & estimate < 10) %>%
+  mutate(
+    res_type = factor(
+      res_type,
+      levels = c("epi_AED", "epi_no_AED", "no_epi"),
+      labels = c("children of women\n with ASM-treated\n epilepsy",
+                 "children of women\n with ASM-untreated\n epilepsy",
+                 "childrem of women\n without epilepsy")
+    )
+  ) %>%
+  ggplot(aes(estimate, res_type)) +
+  geom_vline(xintercept = 1, color = "grey80") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(age)) +
+  scale_x_continuous(
+    breaks = c(0, 1, 2.5, 5, 7.5, 10)
+  ) +
+  coord_cartesian(xlim = c(0, 10)) +
+  labs(
+    title = title,
+    subtitle = "when having CT/TT rs1801133 genotype, compared to CC genotype"
+  ) +
+  theme(
+    axis.title.y = element_blank()
+  )
+```
+
+
+```{r save_plot}
+ggsave(here("FIGURES",
+            "lang_imp_risk_within_epilepsy-ASM-cat_strat_MTHFR-genotype.png"))
+```
+
+
+## Autistic traits
+
+```{r}
+cur_data <- input_data_autist
+all_ages <- levels(cur_data$autist_age)
+all_aed_groups <- levels(input_data_autist$CC_STATUS)
+dependent_var <- "autistic_trait"
+dept_age_var <- "autist_age"
+title <- "OR of autistic traits"
+cur_levels <- list(
+  `0`= "no autist.tr.",
+  `1` = "autist.tr."
+)
+```
+
+```{r run_glm}
+```
+
+```{r tidy_res}
+```
+
+```{r save, include= FALSE}
+```
+
+```{r plot2}
+all_tidied_est %>%
+  select(estimate:res_type, adj) %>%
+  distinct() %>%
+  filter(!is.na(estimate) & adj != "crude" & estimate < 10) %>%
+  mutate(
+    res_type = factor(
+      res_type,
+      levels = c("epi_AED", "epi_no_AED", "no_epi"),
+      labels = c("children of women\n with ASM-treated\n epilepsy",
+                 "children of women\n with ASM-untreated\n epilepsy",
+                 "childrem of women\n without epilepsy")
+    )
+  ) %>%
+  ggplot(aes(estimate, res_type)) +
+  geom_vline(xintercept = 1, color = "grey80") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(age)) +
+  scale_x_continuous(
+    breaks = c(0, 1, 2.5, 5)
+  ) +
+  coord_cartesian(xlim = c(0, 5)) +
+  labs(
+    title = title,
+    subtitle = "when having CT/TT rs1801133 genotype, compared to CC genotype"
+  ) +
+  theme(
+    axis.title.y = element_blank()
+  )
+```
+
+```{r save_plot2}
+ggsave(here("FIGURES",
+            "autistic_risk_within_epilepsy-ASM-cat_strat_MTHFR-genotype.png"))
+```

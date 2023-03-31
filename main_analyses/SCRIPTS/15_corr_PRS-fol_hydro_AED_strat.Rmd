@@ -1,0 +1,573 @@
+---
+title: "Correlation between PRS and folate concentration"
+subtitle: "stratified by type of ASM treatment"
+author: "Julia Romanowska"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    code_folding: "hide"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(purrr)
+library(here)
+library(stringr)
+library(ggplot2)
+library(naniar)
+library(correlation)
+library(see)
+library(janitor)
+library(flextable)
+library(patchwork)
+```
+
+```{r read_data, message=FALSE}
+source("00_params.R")
+
+input_data <- read_delim(
+  here("DATA", "cleaned_data.txt"),
+  delim = "\t"
+  ) %>%
+  select(iid:NOAED_PREG_c, PLURAL, DUPLIKAT, AED_POLY, ends_with("_MONO"),
+         FOL_PRE_or_TRIM1, FOLAT:autistic_trait_8yr) %>%
+  pivot_longer(
+    cols = starts_with("lang_imp"),
+    names_to = "lang_imp_age",
+    values_to = "lang_imp"
+  ) %>%
+  mutate(
+    lang_imp_age = factor(
+      stringr::word(
+        lang_imp_age,
+        start = -1,
+        end = -1,
+        sep = stringr::fixed("_")
+      )
+    )
+  ) %>%
+  mutate(MTHFR_2strat = ifelse(
+    minor_al_load %in% c("CT", "TT"),
+    yes = "CT/TT",
+    no = "CC"
+  )) %>%
+  mutate(any_AED = ifelse(
+    CC_STATUS == "epi_AED",
+    yes = TRUE,
+    no = FALSE
+  )) %>%
+  mutate(m_id = as.numeric(stringr::str_sub(M_ID_1111, 2, -1))) %>%
+  mutate(
+    across(
+      c(minor_al_load, a1, a2, CC, IK_EPI, EPILEPSY2_c, FOL_PRE_or_TRIM1,
+        starts_with("lang_imp"), starts_with("autistic"),
+        AED_PREG_c, NOAED_PREG_c, CC_STATUS, MTHFR_2strat,
+        AED_POLY, ends_with("_MONO")),
+      ~ factor(.x)
+    )
+  )
+
+all_ASM_vars <- unique(
+  str_subset(
+    names(input_data), pattern = "_MONO$"
+  )
+)
+all_ASM_names <- all_ASM_vars %>%
+  word(start = 1, end = 1, sep = fixed("_"))
+names(all_ASM_vars) <- all_ASM_names
+
+fol_suppl_diff <- read_delim(here("DATA", "folate_suppl_diff_covariate.txt"),
+                             delim = "\t")
+
+input_data <- input_data %>%
+  left_join(fol_suppl_diff)
+```
+
+# Language impairment
+
+```{r}
+dependent <- "lang_imp"
+dept_age_var <- "lang_imp_age"
+cur_data <- input_data %>%
+  select(iid, all_of(all_prs_types), CC_STATUS, EPILEPSY2_c, any_AED,
+      AED_POLY:FOL_hydro, diff_folate_intake, starts_with("lang_imp"), m_id) %>%
+  pivot_longer(
+    cols = ends_with("_MONO"),
+    names_to = "ASM_type",
+    values_to = "ASM_type_use"
+  )
+all_ages <- levels(input_data$lang_imp_age)
+```
+
+## Frequency counts
+
+```{r freq_count}
+walk(all_ASM_vars, function(ASM){
+  cat("\n       === CURRENT ASM TYPE: ", ASM, " ===\n\n")
+  
+  tmp_data <- cur_data %>%
+    filter(
+      !is.na(!!sym(dependent)) &
+        ASM_type == ASM
+    )
+  print(
+    janitor::tabyl(
+      tmp_data, ASM_type_use, !!sym(dept_age_var)
+    )
+  )
+})
+```
+
+The counts are really low - we will focus only on `CBZ_MONO`, `LTG_MONO`, `VPA_MONO`, and `LTA_MONO`.
+
+```{r}
+cur_ASM_vars <- all_ASM_vars[c("CBZ", "LTG", "VPA")]
+```
+
+
+```{r filter_asm_vars}
+# NOTE: now, I am not interested in the age categories
+cur_data <- cur_data %>%
+  filter(ASM_type %in% cur_ASM_vars) %>%
+  select(-!!sym(dept_age_var), -!!sym(dependent)) %>%
+  distinct()
+cur_data %>%
+  count(ASM_type)
+cur_data %>%
+  mutate(has_fol_hydro = !is.na(FOL_hydro)) %>%
+  janitor::tabyl(has_fol_hydro, ASM_type_use, ASM_type)
+```
+
+The tables above are counts for groups of those who used the ASM (`1`), those
+who did not use (`0`), and those who have any data on folate concentration or not.
+
+## Relation
+
+### Stratified for ASM use
+
+Plotting the relation between folate concentration and PRS stratified by use of
+ASM, for the ASM types that we had most data for.
+
+**Best-fit PRS**
+
+```{r plot_relations_prs_auto}
+ASM_labels <- c("carbamazepine", "lamotrigine", "valproate")
+names(ASM_labels) <- as.character(cur_ASM_vars)
+plot_corr_all_asm_prs_auto <- map(cur_ASM_vars, function(ASM){
+    cur_title <- paste0(
+      "ASM type: ", ASM_labels[ASM]
+    )
+    tmp_data <- cur_data %>%
+      filter(ASM_type == as.character(ASM) & ASM_type_use == 1) %>%
+      select(prs_auto, FOL_PRE_or_TRIM1, FOLAT, s_folat, diff_folate_intake,
+             FOL_hydro)
+    
+    print(
+      ggplot(
+        tmp_data,
+        aes(prs_auto, FOL_hydro)
+        ) +
+        geom_miss_point() +
+        labs(
+          title = cur_title,
+          subtitle = "overview of missing and non-missing values"
+        )
+    )
+    cur_plot <- tryCatch(
+      {plot(
+      cor_test(
+        data = tmp_data,
+        x = "prs_auto",
+        y = "FOL_hydro",
+        method = "spearman",
+        partial = TRUE
+        ),
+        show_statistic = FALSE, show_ci = FALSE, stars = TRUE
+      ) +
+      labs(
+        title = cur_title,
+        caption = "Spearman correlation; adjusted for: FOL_PRE_or_TRIM1, FOLAT, s_folat, diff_folate_intake"
+      ) +
+      xlab("PRS (automatic) + covariates") +
+      ylab("maternal plasma folate conc. (nmol/L)")},
+      error = function(e){
+        message("Could not perform adjusted spearman correlation! Plotting non-adjusted.")
+        plot(
+          cor_test(
+          data = tmp_data,
+          x = "prs_auto",
+          y = "FOL_hydro",
+          method = "spearman"
+          ),
+          show_statistic = FALSE, show_ci = FALSE, stars = TRUE
+        ) +
+        labs(
+          title = cur_title,
+          caption = "Spearman correlation; non-adjusted"
+        ) +
+        xlab("PRS (automatic)") +
+        ylab("maternal plasma folate conc. (nmol/L)")
+      }
+    )
+    print(cur_plot)
+    return(cur_plot)
+})
+```
+
+<br>
+<br>
+
+**2nd-best PRS**
+
+```{r plot_relations_prs_manual}
+ASM_labels <- c("carbamazepine", "lamotrigine", "valproate")
+names(ASM_labels) <- as.character(cur_ASM_vars)
+plot_corr_all_asm_prs_manual <- map(cur_ASM_vars, function(ASM){
+    cur_title <- paste0(
+      "ASM type: ", ASM_labels[ASM]
+    )
+    tmp_data <- cur_data %>%
+      filter(ASM_type == as.character(ASM) & ASM_type_use == 1) %>%
+      select(prs_manual, FOL_PRE_or_TRIM1, FOLAT, s_folat, diff_folate_intake,
+             FOL_hydro)
+    
+    print(
+      ggplot(
+        tmp_data,
+        aes(prs_manual, FOL_hydro)
+        ) +
+        geom_miss_point() +
+        labs(
+          title = cur_title,
+          subtitle = "overview of missing and non-missing values"
+        )
+    )
+    cur_plot <- tryCatch(
+      {plot(
+      cor_test(
+        data = tmp_data,
+        x = "prs_manual",
+        y = "FOL_hydro",
+        method = "spearman",
+        partial = TRUE
+        ),
+        show_statistic = FALSE, show_ci = FALSE, stars = TRUE
+      ) +
+      labs(
+        title = cur_title,
+        caption = "Spearman correlation; adjusted for: FOL_PRE_or_TRIM1, FOLAT, s_folat, diff_folate_intake"
+      ) +
+      xlab("PRS (manual) + covariates") +
+      ylab("maternal plasma folate conc. (nmol/L)")},
+      error = function(e){
+        message("Could not perform adjusted spearman correlation! Plotting non-adjusted.")
+        plot(
+          cor_test(
+          data = tmp_data,
+          x = "prs_manual",
+          y = "FOL_hydro",
+          method = "spearman"
+          ),
+          show_statistic = FALSE, show_ci = FALSE, stars = TRUE
+        ) +
+        labs(
+          title = cur_title,
+          caption = "Spearman correlation; non-adjusted"
+        ) +
+        xlab("PRS (manual)") +
+        ylab("maternal plasma folate conc. (nmol/L)")
+      }
+    )
+    print(cur_plot)
+    return(cur_plot)
+})
+```
+
+
+<br>
+<br>
+
+**rs1801133 genotype strata**
+
+```{r plot_relations_MTHFR_strat}
+t_tests_all_asm <- map(cur_ASM_vars, function(ASM){
+    cur_title <- paste0(
+      "ASM type: ", word(ASM, start = 1, end = 1, sep = fixed("_"))
+    )
+    tmp_data <- cur_data %>%
+          filter(ASM_type == as.character(ASM) & ASM_type_use == 1) %>%
+      select(MTHFR_2strat, FOL_PRE_or_TRIM1, FOLAT, s_folat, diff_folate_intake,
+             FOL_hydro)
+    
+    print(
+      ggplot(
+        tmp_data,
+        aes(MTHFR_2strat, FOL_hydro)
+        ) +
+        geom_miss_point() +
+        labs(
+          title = cur_title
+        )
+    )
+    cat("T-test:\n")
+    cur_t_test <- t.test(
+      FOL_hydro ~ MTHFR_2strat,
+      data = tmp_data
+    )
+    print(cur_t_test %>% broom::tidy())
+    
+    return(cur_t_test)
+})
+names(t_tests_all_asm) <- cur_ASM_vars
+
+t_tests_all_asm
+```
+
+It doesn't look like there are any correlations here.
+
+### Not stratitified
+
+```{r plot_relations_all}
+not_strat_prs_corr_plot <- c()
+walk(all_prs_types, function(prs){
+  tmp_data <- cur_data %>%
+    filter(any_AED) %>%
+    select(prs_manual, prs_auto, MTHFR_2strat, FOL_PRE_or_TRIM1, FOLAT, s_folat,
+           diff_folate_intake, FOL_hydro) %>%
+    distinct()
+  
+  print(
+    ggplot(
+      tmp_data,
+      aes(!!sym(prs), FOL_hydro)
+      ) +
+      geom_miss_point() +
+      labs(title = "overview of missing and non-missing values")
+  )
+  if(prs == "MTHFR_2strat"){
+    cat("ANOVA test:\n")
+    print(
+    aov(
+      formula = as.formula(
+        paste0("FOL_hydro ~ ", prs,
+               " + FOL_PRE_or_TRIM1 + FOLAT + s_folat + diff_folate_intake")
+      ),
+      data = tmp_data
+    ) %>% broom::tidy()
+    )
+  } else if(prs == "prs_auto") {
+    not_strat_prs_corr_plot <<- plot(
+      cor_test(
+        data = tmp_data %>%
+          select(-MTHFR_2strat, -prs_manual),
+        x = prs,
+        y = "FOL_hydro",
+        method = "spearman",
+        partial = TRUE
+        ),
+        show_statistic = FALSE, show_ci = FALSE, stars = TRUE
+      ) +
+      labs(
+        title = "any ASM use",
+        caption = "Spearman correlation; adjusted for: FOL_PRE_or_TRIM1, FOLAT, s_folat, diff_folate_intake"
+      ) +
+      xlab("PRS (automatic) + covariates") +
+      ylab("maternal plasma folate conc. (nmol/L)")
+    print(not_strat_prs_corr_plot)
+  } else {
+    plot(
+      cor_test(
+        data = tmp_data %>%
+          select(-MTHFR_2strat, -prs_auto),
+        x = prs,
+        y = "FOL_hydro",
+        method = "spearman",
+        partial = TRUE
+        ),
+        show_statistic = FALSE, show_ci = FALSE, stars = TRUE
+      ) +
+      labs(
+        title = "any ASM use",
+        caption = "Spearman correlation; adjusted for: FOL_PRE_or_TRIM1, FOLAT, s_folat, diff_folate_intake"
+      ) +
+      xlab("PRS (manual) + covariates") +
+      ylab("maternal plasma folate conc. (nmol/L)")
+  }
+})
+
+wrap_plots(
+  c(plot_corr_all_asm_prs_auto, list(not_strat_prs_corr_plot)),
+  ncol = 2) *
+  theme_minimal() + 
+  plot_annotation(tag_levels = "A", tag_suffix = ")")
+ggsave(
+  here("FIGURES", "corr_FOL_hydro_PRS_auto_strat_per_ASM_type.png"),
+  height = 8,
+  width = 10
+)
+```
+
+
+## Counts per age
+
+Just to be able to present something, we can count the cases/controls per age
+category, ASM use, and MTHFR stratum. In the tables below, percentage of users
+(`1`) and non-users (`0`) of each drug type is shown. The percentages are
+calculated from totals per MTHFR-stratum (i.e., per column in the tables).
+
+```{r}
+freq_data <- input_data %>%
+  select(iid, MTHFR_2strat, CC_STATUS, EPILEPSY2_c, any_AED,
+         all_of(as.character(cur_ASM_vars)), starts_with("lang_imp"), m_id) %>%
+  pivot_longer(
+    cols = ends_with("_MONO"),
+    names_to = "ASM_type",
+    values_to = "ASM_type_use"
+  )
+```
+
+```{r print_freq_detail}
+counts_chosen_ASMs <- map(cur_ASM_vars, function(ASM){
+  # cat("\n    ====== CURRENT ASM TYPE: ", ASM, " ======\n\n")
+  counts_all_ages <- map(all_ages, function(cur_age){
+    tmp_data <- freq_data %>%
+      filter(
+        !is.na(!!sym(dependent)) &
+          ASM_type == as.character(ASM) &
+          ASM_type_use == 1 &
+          !!sym(dept_age_var) == cur_age
+      )
+    # cat("       === CURRENT AGE: ", cur_age, " ===\n")
+      # print(
+      out_table <- tabyl(
+          tmp_data,
+          !!sym(dependent),
+          MTHFR_2strat
+        ) %>%
+          adorn_percentages("col") %>%
+          adorn_pct_formatting(digits = 2) %>%
+          adorn_ns() %>%
+        as_tibble() %>%
+        tibble::add_column(age = cur_age)
+      # )
+    # cat("\n")
+      return(out_table)
+  }) %>%
+  bind_rows()
+  return(counts_all_ages)
+})
+names(counts_chosen_ASMs) <- cur_ASM_vars
+
+small_border <- officer::fp_border(color = "gray", width = 1)
+header_border <- officer::fp_border(color = "gray30", width = 2)
+
+all_counts_tables <- map(cur_ASM_vars, function(cur_ASM){
+  cur_title <- paste("Women taking", cur_ASM)
+  as_grouped_data(
+    counts_chosen_ASMs[[cur_ASM]],
+    groups = "age"
+  ) %>%
+    as_flextable() %>%
+    bold(bold = TRUE, part = "header") %>%
+    align(i = ~ !is.na(age), align = "center") %>% 
+    bold(i = ~ !is.na(age)) %>%
+    add_header_row(
+      values = c("", "rs1801133 genotype"),
+      colwidths = c(1, 2)
+    ) %>%
+    border_remove() %>%
+    hline_bottom(
+      j = 1:3,
+      border = header_border
+    ) %>%
+    bg(
+      i = ~!is.na(age),
+      bg = "gray80"
+    ) %>%
+    border_inner_h(
+      border = small_border,
+      part = "body"
+    ) %>%
+    fix_border_issues() %>%
+    width(
+      j = c("CC", "CT/TT"),
+      width = 4,
+      unit = "cm"
+    ) %>%
+    set_caption(
+      caption = cur_title
+    )
+})
+names(all_counts_tables) <- cur_ASM_vars
+
+all_counts_tables
+
+walk(
+  cur_ASM_vars,
+  function(asm){
+    cur_tab <- all_counts_tables[[asm]]
+    save_as_docx(
+      cur_tab,
+      path = here(
+        "RESULTS",
+        paste0("counts_per_genotype_", dependent, "_asm_", asm, ".docx")
+      )
+    )
+  }
+)
+```
+
+
+# Autistic traits
+
+```{r}
+dependent <- "autistic_trait"
+dept_age_var <- "autist_age"
+# need to re-pivot data, now using the autistic_trait variables
+cur_data <- input_data %>%
+  select(iid, all_of(all_prs_types), CC_STATUS, EPILEPSY2_c, any_AED,
+         AED_POLY:FOL_hydro, starts_with("autist"), m_id) %>%
+  distinct() %>%
+  pivot_longer(
+    cols = starts_with("autistic"),
+    names_to = dept_age_var,
+    values_to = dependent
+  ) %>%
+  mutate(autist_age = stringr::str_sub(autist_age, -3, -1)) %>%
+  pivot_longer(
+    cols = ends_with("_MONO"),
+    names_to = "ASM_type",
+    values_to = "ASM_type_use"
+  )
+all_ages <- unique(cur_data[[dept_age_var]])
+```
+
+## Frequency counts
+
+```{r freq_count}
+```
+
+The counts are really low for autistic traits as well. We might focus on the
+same ASM types as above.
+
+## Counts per age
+
+Just to be able to present something, we can count the cases/controls per age
+category, ASM use, and MTHFR stratum. In the tables below, percentage of users
+(`1`) and non-users (`0`) of each drug type is shown. The percentages are
+calculated from totals per MTHFR-stratum (i.e., per column in the tables).
+
+```{r}
+freq_data <- cur_data %>%
+  select(iid, MTHFR_2strat, CC_STATUS, EPILEPSY2_c, any_AED,
+         starts_with("ASM_"), starts_with("autist"), m_id) %>%
+  filter(ASM_type %in% cur_ASM_vars)
+```
+
+```{r print_freq_detail}
+```

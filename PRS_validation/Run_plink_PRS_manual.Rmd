@@ -1,0 +1,222 @@
+---
+title: "PRS - PLINK"
+author: "Julia Romanowska"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(targets)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(here)
+library(patchwork)
+library(ggiraph)
+library(mgcv)
+library(xaringanthemer)
+style_solarized_light()
+
+base_data <- "DATA/extracted_gwas_summ_stats.txt"
+target_data <- "DATA/cntrl_all_chr_QC"
+pheno_data <- "DATA/mothers_IDs_folate_meas_blood.txt"
+out_prefix <- "RESULTS/MoBa_folat_plink_selected"
+all_cov_data_file <- here("DATA", "covariates_4prs.txt")
+```
+
+## The idea
+
+Checking the PRS constructed from specific SNPs that were found in the
+literature to affect the folate concentration. The SNPs proposed by Elisabeth:
+
+```{r}
+scan(here("DATA", "SNP_list_4test.txt"), what = "character")
+```
+
+However, some of those were not found in base data (GWAS summary stat) due to
+e.g., quality issues or perhaps these were not included in the GWAS at all.
+
+These SNPs were found in both, base data and MoBa data:
+
+```{r}
+read_table(base_data, progress = FALSE, col_types = NULL)
+```
+
+## Run script
+
+The script was run in the console, using the following data / parameters.
+
+```{r}
+base_data
+target_data
+out_prefix
+```
+
+This is the command used to run the script:
+
+```{r, echo=FALSE}
+sprintf(
+    "./plink --bfile %s --score %s 3 4 8 header --out %s",
+    target_data,
+    base_data,
+    out_prefix
+  )
+```
+
+Additionally, these data were used:
+
+```{r}
+pheno_data
+all_cov_data_file
+```
+
+## Check results
+
+Calculated score:
+
+```{r}
+tar_load(plink_prs_manual)
+plink_prs_manual
+```
+
+Distribution of PRS and SPFOLATE_F:
+
+```{r}
+ggplot(plink_prs_manual, aes(SPFOLATE_F)) +
+  geom_histogram()
+
+ggplot(plink_prs_manual, aes(SCORE)) +
+  geom_histogram()
+
+```
+
+### Generating a quantile plot
+
+The figure below shows how the measured values of folate concentration in blood
+change with the quantiles of PRS.
+
+```{r plot_prs_quant}
+quant_plot <- ggplot(plink_prs_manual, aes(PRS_quant, SPFOLATE_F)) +
+  geom_jitter() +
+  theme_xaringan() +
+  xlab("deciles of PRS") +
+  ylab("transformed folate conc.") +
+  labs(
+    title = "Grouping of women based on the decile of PRS\n and their folate concentration in blood",
+    caption = "* folate concentration values transformed by inverse normal rank"
+  ) +
+  theme(
+    plot.title.position = "plot"
+  )
+scatter_plot <- ggplot(plink_prs_manual) +
+  geom_point(aes(SCORE, SPFOLATE_F)) +
+  theme_xaringan()+
+  xlab("PRS") +
+  ylab("transformed folate conc.") +
+  labs(
+    title = "PRS vs folate concentration",
+    caption = "* folate concentration values transformed by inverse normal rank"
+  ) +
+  theme(
+    plot.subtitle = element_text(face = "italic"),
+    plot.title.position = "plot"
+  )
+
+(quant_plot / scatter_plot) * theme_minimal() +
+  plot_annotation(
+    title = "PLINK - manual SNP selection",
+    theme = theme(
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5)
+    )
+  )
+
+ggsave(
+  here("RESULTS", "PRS_plink_manual_scatter.png"),
+  width = 7,
+  height = 5,
+  units = "in",
+  dpi = 120
+)
+
+smooth_plot <- ggplot(plink_prs_manual) +
+  geom_smooth(aes(SCORE, SPFOLATE_F)) +
+  geom_smooth(aes(SCORE, SPFOLATE_F), color = "navyblue", method = "lm") +
+  theme_xaringan()+
+  xlab("PRS") +
+  ylab("transformed folate conc.") +
+  labs(
+    title = "PRS vs smoothed folate concentration",
+    subtitle = "(using GAM and LM methods)",
+    caption = "* folate concentration values transformed by inverse normal rank"
+  ) +
+  theme(
+    plot.subtitle = element_text(face = "italic"),
+    plot.title.position = "plot"
+  )
+
+(quant_plot / smooth_plot) * theme_minimal() +
+  plot_annotation(
+    title = "PLINK - manual SNP selection",
+    theme = theme(
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5)
+    )
+  )
+ggsave(
+  here("RESULTS", "PRS_plink_manual_smooth.png"),
+  width = 7,
+  height = 5,
+  units = "in",
+  dpi = 120
+)
+
+```
+
+
+### Check linearity using GAM
+
+Only SPFOLATE_F ~ PRS
+
+```{r gam}
+gam_model <- mgcv::gam(
+  formula = SPFOLATE_F ~ s(SCORE, bs = "cs"),
+  data = plink_prs_manual,
+  method = "REML"
+)
+gam_model
+broom::tidy(gam_model)
+
+plot(gam_model)
+
+gam.check(gam_model)
+```
+
+Adding covariates
+
+```{r gam_cov}
+tar_load(prs_covariate)
+prs_covariate
+
+plink_prs_manual_cov <- plink_prs_manual %>%
+  left_join(prs_covariate)
+plink_prs_manual_cov
+
+gam_model_cov <- mgcv::gam(
+  formula = SPFOLATE_F ~ s(SCORE, bs = "cs") +
+    s(diff_folate_intake, bs = "cs", k = 6) +
+    s(PC1, bs = "cs") +
+    s(PC2, bs = "cs") +
+    s(PC3, bs = "cs"),
+  data = plink_prs_manual_cov,
+  method = "REML"
+)
+gam_model_cov
+broom::tidy(gam_model_cov)
+
+plot(gam_model_cov)
+gam.check(gam_model_cov)
+```
+
+
+

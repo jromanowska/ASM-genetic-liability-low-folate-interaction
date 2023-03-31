@@ -1,0 +1,313 @@
+---
+title: "PRS - PRSice2"
+author: "Julia Romanowska"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(targets)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(here)
+library(patchwork)
+library(ggiraph)
+library(mgcv)
+library(xaringanthemer)
+style_solarized_light()
+
+base_data <- here("DATA", "base_data_cleaned.txt")
+target_data <- here("DATA", "cntrl_all_chr_QC")
+pheno_data <- here("DATA", "mothers_IDs_folate_meas_blood.txt")
+all_cov_data <- here("DATA", "covariates_4prs.txt")
+out_prefix <- "MoBa_folat_prsice_with-cov"
+out_path <- here("RESULTS", out_prefix)
+```
+
+## Run script
+
+The script was run in the console, using the following data / parameters.
+
+```{r}
+base_data
+target_data
+pheno_data
+all_cov_data
+out_path
+```
+
+This is the command used to run the script:
+
+```{r, echo=FALSE}
+sprintf(
+  "Rscript PRSice.R --prsice PRSice_linux --base %s --target %s --binary-target F --pheno %s --base-maf MAF:0.01 --stat BETA --beta --cov %s --out %s",
+  base_data,
+  target_data,
+  pheno_data,
+  all_cov_data,
+  out_path
+)
+```
+
+## Check results
+
+Here are some automatically generated plots, showing which p-value threshold
+might generate the best fit of the PRS to our data.
+
+```{r, results="hide"}
+# create links to the newest plots
+out <- system("rm RESULTS/newest*png",
+  intern = FALSE,
+  ignore.stdout = TRUE)
+
+out <- system(
+  paste0("ln -s ", out_prefix, "_BARPLOT_", Sys.Date(),
+         ".png RESULTS/newest_barplot.png"),
+  intern = FALSE,
+  ignore.stdout = TRUE
+)
+out <- system(
+  paste0("ln -s ", out_prefix, "_HIGH-RES_PLOT_", Sys.Date(),
+         ".png RESULTS/newest_high_res_plot.png"),
+  intern = FALSE,
+  ignore.stdout = TRUE
+)
+```
+
+![barplot](RESULTS/newest_barplot.png)
+
+![high_res](RESULTS/newest_high_res_plot.png)
+
+### Detailed results
+
+Summary of the fit:
+
+```{r}
+summary <- read_delim(
+  paste0(out_path, ".summary"),
+  delim = "\t"
+)
+summary
+```
+
+All the runs:
+
+```{r}
+out <- read_delim(
+  paste0(out_path, ".prsice"),
+  delim = "\t")
+out
+
+out %>%
+  filter(R2 == max(R2))
+
+ggplot(out %>%
+         filter(Threshold < 1)) +
+  aes(Threshold, R2) +
+  geom_point(aes(colour = P, size = Num_SNP)) +
+  labs(
+    title = "Fit coefficient of PR scores at various thresholds"
+  )
+```
+
+Zoom on the first thresholds.
+
+```{r}
+out_interactive <- out %>%
+  mutate(info = paste0("Threshold: ", Threshold,
+                       "\np-value: ", P,
+                       "\n# SNPs: ", Num_SNP))
+# thresh_plot_zoom <- 
+  ggplot(out_interactive %>%
+         filter(Threshold < 0.0025)) +
+  aes(x = Threshold, y = R2) +
+  geom_point(aes(colour = P, size = Num_SNP)) +
+  labs(
+    title = "ZOOM: Fit coefficient of PR scores at various thresholds"
+  )
+# girafe(ggobj = thresh_plot_zoom)
+  
+knitr::kable(
+  out %>%
+    filter(Threshold < 0.0025)
+)
+```
+
+Best fit:
+
+```{r}
+tar_load(best_prs_fit)
+best_prs_fit
+
+best_prs_fit %>%
+  count(In_Regression)
+```
+
+### Generating a quantile plot
+
+Read the phenotype data and add to the PRS results.
+
+```{r}
+tar_load(cntrl_ids_folate_cov)
+cntrl_ids_folate_cov
+
+best_prs_fit <- best_prs_fit %>%
+  select(-FID) %>%
+  left_join(
+    cntrl_ids_folate_cov,
+    by = c("IID" = "SENTRIXID")
+  )
+best_prs_fit %>%
+  filter(is.na(SPFOLATE_F))
+```
+
+The figure below shows how the measured values of folate concentration in blood
+change with the quantiles of PRS.
+
+```{r plot_prs_quant}
+quant_plot <- ggplot(best_prs_fit, aes(PRS_quant, SPFOLATE_F)) +
+  geom_jitter()
+smooth_plot <- ggplot(best_prs_fit) +
+  # geom_smooth(aes(PRS, SPFOLATE_F))
+  geom_point(aes(PRS, SPFOLATE_F))
+
+quant_plot / smooth_plot
+```
+
+Distribution of PRS and SPFOLATE_F:
+
+```{r}
+ggplot(best_prs_fit, aes(SPFOLATE_F)) +
+  geom_histogram()
+
+ggplot(best_prs_fit, aes(PRS)) +
+  geom_histogram()
+
+```
+
+### Generating a quantile plot
+
+```{r}
+best_prs_fit <- best_prs_fit %>%
+  filter(!is.na(SPFOLATE_F))
+```
+
+The figure below shows how the measured values of folate concentration in blood
+change with the quantiles of PRS.
+
+```{r plot_prs_smooth, warning=FALSE}
+quant_plot <- ggplot(best_prs_fit, aes(PRS_quant, SPFOLATE_F)) +
+  geom_jitter() +
+  theme_xaringan() +
+  xlab("deciles of PRS") +
+  ylab("folate concentration in blood") +
+  labs(
+    title = "Grouping of women based on the decile of PRS\n and their folate concentration in blood"
+  ) +
+  theme(
+    plot.title.position = "plot"
+  )
+smooth_plot <- ggplot(best_prs_fit) +
+  # geom_point(aes(PRS, SPFOLATE_F)) +
+  geom_smooth(
+    aes(PRS, SPFOLATE_F),
+    method = "gam",
+    formula = y ~ s(x, bs = "cs", k = 5)
+  ) +
+  geom_smooth(aes(PRS, SPFOLATE_F), color = "navyblue", method = "lm") +
+  theme_xaringan()+
+  xlab("PRS") +
+  ylab("folate concentration in blood") +
+  labs(
+    title = "Smoothed PRS vs folate concentration",
+    subtitle = "(using GAM method, in pink, and 'lm' method, in blue)"
+  ) +
+  theme(
+    plot.subtitle = element_text(face = "italic"),
+    plot.title.position = "plot"
+  )
+
+(quant_plot / smooth_plot) * theme_minimal() +
+  plot_annotation(
+    title = "PRSice2 - automated method",
+    theme = theme(
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5)
+    )
+  )
+
+ggsave(
+  here("RESULTS", "PRS_auto_fit.png"),
+  width = 7,
+  height = 5,
+  units = "in",dpi = 120
+)
+
+gam_model <- mgcv::gam(
+  formula = SPFOLATE_F ~ s(PRS, bs = "cs", k = 5),
+  data = best_prs_fit,
+  method = "REML"
+)
+gam_model
+broom::tidy(gam_model)
+```
+
+Check residuals
+
+```{r}
+data_gam_fitted <- tibble(
+  residuals = gam_model$residuals,
+  fitted = gam_model$fitted.values
+)
+ggplot(data_gam_fitted, aes(fitted, residuals)) +
+  geom_point()
+
+ggplot(best_prs_fit, aes(SPFOLATE_F)) +
+  geom_histogram()
+
+shapiro.test(best_prs_fit$SPFOLATE_F)
+shapiro.test(best_prs_fit$orig_SPFOLATE_F)
+
+```
+
+
+### Check linearity using GAM
+
+Only SPFOLATE_F ~ PRS
+
+```{r gam}
+broom::tidy(gam_model)
+
+plot(gam_model)
+
+gam.check(gam_model)
+```
+
+Adding covariates
+
+```{r gam_cov}
+tar_load(prs_covariate)
+prs_covariate
+
+best_fit_cov <- best_prs_fit %>%
+  left_join(prs_covariate)
+best_fit_cov
+
+gam_model_cov <- mgcv::gam(
+  formula = SPFOLATE_F ~ s(PRS, bs = "cs",k = 5) +
+    s(diff_folate_intake, bs = "cs", k = 6) +
+    s(PC1, bs = "cs") +
+    s(PC2, bs = "cs") +
+    s(PC3, bs = "cs"),
+  data = best_fit_cov,
+  method = "REML"
+)
+gam_model_cov
+broom::tidy(gam_model_cov)
+
+plot(gam_model_cov)
+gam.check(gam_model_cov)
+```
+
