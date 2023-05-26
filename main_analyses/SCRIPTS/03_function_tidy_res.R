@@ -28,14 +28,31 @@ tidy_res_robust <- function(
     cur_model,
     vcov. = sandwich::vcovCL(cur_model, cluster = cluster_var)
   )
+  
+  # explicitly divide by 1000 if there is a PRS to get a more reasonable
+  #   result - this will show how the risk increases with 0.001 unit change 
+  #   in PRS, since the range of PRS in the data was very small
+  if(any(rownames(robust_ci) %in% c("prs_auto", "prs_manual"))){
+    which_rows <- grep(pattern = "prs", rownames(robust_ci), fixed = TRUE)
+    robust_ci[which_rows,] <- robust_ci[which_rows,]/1000
+  }
+  
   if(exp){
     robust_ci <- exp(robust_ci)
   }
   robust_ci_tbl <- as_tibble(robust_ci, rownames = "term")
   colnames(robust_ci_tbl) <- c("term", "conf.low", "conf.high")
   
-  tidy_res <- broom::tidy(cur_model, exp = exp) %>%
+  tidy_res <- broom::tidy(cur_model) %>%
     select(term, estimate) %>%
+    mutate(
+      # correct the estimates for PRS here!
+      estimate = ifelse(
+        grepl(pattern = "prs", term, fixed = TRUE),
+        yes = exp(estimate/1000),
+        no = exp(estimate)
+      )
+    ) %>%
     left_join(robust_ci_tbl, by = "term")
   
   # check whether the estimates include interaction term
@@ -229,11 +246,21 @@ tidy_and_extract <- function(
       cur_formula <- paste(
         cur_formula[2], cur_formula[1], cur_formula[3]
       )
-      cur_adj_table <- tidy_res_robust(
-        cur_fit,
-        cur_fit$data$m_id,
-        dept_var
-      )
+      if(cur_res_type == "res_prelim_interact" &
+       cur_adj != "no_prs"){
+        cur_adj_table <- tidy_res_robust(
+          cur_fit,
+          cur_fit$model$m_id,
+          dept_var,
+          interaction = c("any_AED", cur_adj)
+        )
+      } else { # all other models, without interaction
+        cur_adj_table <- tidy_res_robust(
+          cur_fit,
+          cur_fit$model$m_id,
+          dept_var
+        )
+      }
       
       cur_adj_table <- cur_adj_table %>%
         filter(stringr::str_starts(
@@ -371,35 +398,66 @@ make_table2_interact <- function(
 ){
   small_border <- officer::fp_border(color = "gray", width = 1)
   header_border <- officer::fp_border(color = "gray30", width = 2)
-  
-  as_grouped_data(
-    data %>% 
-      select(model, everything()) %>%
-      mutate(
-        aOR = ifelse(
-          is.na(aOR),
-          yes = "",
-          no = sprintf(
-            "%.2g (%.2g - %.2g)", aOR, conf.low, conf.high
-          )
-        ),
-        p.val = ifelse(
-          is.na(p.val),
-          yes = "",
-          no = sprintf(
-            "%.2g", p.val
-          )
-        ),
-        model = factor(
-          model,
-          levels = c("no_prs", "prs_manual", "prs_auto", "MTHFR_2strat"),
-          labels = c("no interaction", "interaction with PRS (manual)",
-                     "interaction with PRS (automatic)",
-                     "interaction with rs1801133")
+
+  # prepare the data first - "no_prs" model should be as an extra column
+  no_interaction_data <- data %>%
+    select(model, -p.val, everything()) %>%
+    filter(model == "no_prs") %>%
+    mutate(
+      aOR = ifelse(
+        is.na(aOR),
+        yes = "",
+        no = sprintf(
+          "%.2g (%.2g - %.2g)", aOR, conf.low, conf.high
         )
-      ) %>%
-      arrange(model, age) %>%
-      select(-conf.low, -conf.high),
+      )
+    ) %>%
+    select(-conf.low, -conf.high, -p.val) %>%
+    rename(no_int_OR = aOR)
+    
+  no_interaction_data_for_joining <- bind_rows(
+    no_interaction_data %>% mutate(model = "prs_manual"),
+    no_interaction_data %>% mutate(model = "prs_auto"),
+    no_interaction_data %>% mutate(model = "MTHFR_2strat")
+  )
+  prepared_data <- data %>% 
+    select(model, everything()) %>%
+    filter(model != "no_prs") %>%
+    mutate(
+      aOR = ifelse(
+        is.na(aOR),
+        yes = "",
+        no = sprintf(
+          "%.2g (%.2g - %.2g)", aOR, conf.low, conf.high
+        )
+      ),
+      p.val = ifelse(
+        is.na(p.val),
+        yes = "",
+        no = sprintf(
+          "%.2g", p.val
+        )
+      )
+    ) %>%
+    select(-conf.low, -conf.high) %>%
+    left_join(
+      no_interaction_data_for_joining,
+      by = c("model", "label", "age", "levels", "0", "1")
+    ) %>%
+    mutate(
+      model = factor(
+        model,
+        levels = c("no_prs", "prs_manual", "prs_auto", "MTHFR_2strat"),
+        labels = c("no interaction", "interaction with PRS (manual)",
+                   "interaction with PRS (automatic)",
+                   "interaction with rs1801133")
+      )
+    ) %>%
+    arrange(model, age)
+    
+  as_grouped_data(
+    prepared_data %>%
+      select(model:`1`, no_int_OR, aOR:p.val),
     groups = c("model", "age")
   ) %>%
     as_flextable() %>% 
@@ -408,24 +466,25 @@ make_table2_interact <- function(
     bold(i = ~ !is.na(age) | !is.na(model)) %>%
     set_header_labels(
       label = "term",
-      aOR = "OR (95% CI)",
+      aOR = "with interaction",
+      no_int_OR = "no interaction",
       p.val = "p-value",
       levels = "case-control group",
       `0` = levels[["0"]],
       `1` = levels[["1"]]
     ) %>%
     add_header_row(
-      values = c("", "N (% of total)", ""),
-      colwidths = c(2, 2, 2)
+      values = c("", "N (% of total)", "OR (95% CI)", ""),
+      colwidths = c(2, 2, 2, 1)
     ) %>%
     border_remove() %>%
     hline_bottom(
-      j = 1:6,
+      j = 1:7,
       border = header_border
     ) %>%
     hline(
       border = header_border,
-      j = 3:4,
+      j = 3:6,
       part = "header"
     ) %>%
     bg(
@@ -442,7 +501,7 @@ make_table2_interact <- function(
     #   i = ~ !is.na(age)
     # ) %>%
     hline_top(
-      j = 1:6,
+      j = 1:7,
       border = header_border
     ) %>%
     border_inner_h(

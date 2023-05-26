@@ -285,19 +285,6 @@ tab2_no_aed_users_fol_int
 
 ### Not stratified, including interaction
 
-```{r show_res_table_interact}
-# show results for all women, taking into account only whether they have epilepsy or not
-cur_data <- all_estimates %>%
-  filter(res_type == "res_prelim_interact") %>%
-  select(-res_type, -add_strat)
-cur_subtitle <- paste(
-  title, "; (mothers with epilepsy vs mothers w/o epilepsy)"
-)
-
-tab2_interact <- make_table2(cur_data, cur_subtitle)
-tab2_interact
-```
-
 ```{r extract_res_interact}
 cur_res_type <- "res_prelim_interact"
 cur_res_list <- fitting_results_list[[cur_res_type]]
@@ -498,72 +485,6 @@ save_as_docx(
 ```
 
 ## Results - final presentation
-
-### With and without interaction term
-
-```{r}
-cur_data <- all_estimates %>%
-  filter(res_type == "res_prelim_interact") %>%
-  select(-res_type, -add_strat) %>%
-  mutate(
-    adj = factor(
-          adj,
-          levels = c("no_prs", "MTHFR_2strat", "prs_auto", "prs_manual"),
-          labels = c("no interaction", "interaction with rs1801133", "interaction with PRS (best)", "interaction with PRS (2nd best)")
-        )
-  )
-
-cur_title <- paste0(
-  title, "; (no stratification, comparing impact of interaction terms)"
-  )
-interact_genotype_compact_table <- make_table2_more_compact(
-  data = cur_data,
-  title = cur_title
-)
-interact_genotype_compact_table
-
-save_as_docx(
-  interact_genotype_compact_table,
-  path = here("RESULTS", "table_2_interact_compact.docx")
-)
-```
-
-```{r}
-cur_data %>%
-  select(estimate:age, adj) %>%
-  distinct() %>%
-  filter(!is.na(estimate)) %>%
-ggplot(aes(estimate, adj)) +
-  geom_vline(xintercept = 1, color = "grey80") +
-  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
-  facet_wrap(vars(age)) +
-  scale_x_continuous(breaks = c(0, 1, 2.5, 5, 7.5, 10)) +
-  labs(
-    title = title,
-    subtitle = "(no stratification, comparing impact of interaction terms)"
-  ) +
-  theme(
-    axis.title.y = element_blank()
-  )
-
-ggsave(filename = here("FIGURES", "lang_imp_risk_interaction_models.png"))
-```
-
-**Trying forestplot**
-
-```{r}
-interact_genotype_tab_plot <- make_table2_plot_compact(
-  data = cur_data,
-  title = cur_title
-)
-interact_genotype_tab_plot
-
-save_as_docx(
-  interact_genotype_tab_plot,
-  path = here("RESULTS", "table_2_interact_with_plot.docx")
-)
-```
-
 
 ### Within each genotype category
 
