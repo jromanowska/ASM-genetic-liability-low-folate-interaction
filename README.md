@@ -7,3 +7,4 @@ autistic traits in children of women with epilepsy?", published in
 
 DOI: 10.1016/j.ajcnut.2023.05.023
 
+[![DOI](https://zenodo.org/badge/630423337.svg)](https://zenodo.org/doi/10.5281/zenodo.10532170)
